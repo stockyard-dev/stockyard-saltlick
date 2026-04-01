@@ -1,0 +1,25 @@
+services:
+  saltlick:
+    image: ghcr.io/stockyard-dev/stockyard-saltlick:latest
+    # Or build locally:
+    # build: .
+    ports:
+      - "8800:8800"
+    environment:
+      - PORT=${STOCKYARD_PORT:-8800}
+      - DATA_DIR=${STOCKYARD_DATA_DIR:-/data}
+      - RETENTION_DAYS=${STOCKYARD_RETENTION_DAYS:-30}
+      - SALTLICK_LICENSE_KEY=${STOCKYARD_SALTLICK_LICENSE_KEY:-}
+    volumes:
+      - saltlick-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8800/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  saltlick-data:
+    driver: local
