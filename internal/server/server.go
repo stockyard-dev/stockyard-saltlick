@@ -1,39 +1,158 @@
 package server
-import ("encoding/json";"log";"net/http";"github.com/stockyard-dev/stockyard-saltlick/internal/store")
-type Server struct{db *store.DB;mux *http.ServeMux;limits Limits}
-func New(db *store.DB,limits Limits)*Server{s:=&Server{db:db,mux:http.NewServeMux(),limits:limits}
-s.mux.HandleFunc("GET /api/resources",s.list)
-s.mux.HandleFunc("POST /api/resources",s.create)
-s.mux.HandleFunc("GET /api/resources/{id}",s.get)
-s.mux.HandleFunc("PUT /api/resources/{id}",s.update)
-s.mux.HandleFunc("DELETE /api/resources/{id}",s.del)
-s.mux.HandleFunc("GET /api/stats",s.stats)
-s.mux.HandleFunc("GET /api/health",s.health)
-s.mux.HandleFunc("GET /ui",s.dashboard);s.mux.HandleFunc("GET /ui/",s.dashboard);s.mux.HandleFunc("GET /",s.root);
-s.mux.HandleFunc("GET /api/tier",func(w http.ResponseWriter,r *http.Request){wj(w,200,map[string]any{"tier":s.limits.Tier,"upgrade_url":"https://stockyard.dev/saltlick/"})})
-return s}
-func(s *Server)ServeHTTP(w http.ResponseWriter,r *http.Request){s.mux.ServeHTTP(w,r)}
-func wj(w http.ResponseWriter,c int,v any){w.Header().Set("Content-Type","application/json");w.WriteHeader(c);json.NewEncoder(w).Encode(v)}
-func we(w http.ResponseWriter,c int,m string){wj(w,c,map[string]string{"error":m})}
-func(s *Server)root(w http.ResponseWriter,r *http.Request){if r.URL.Path!="/"{http.NotFound(w,r);return};http.Redirect(w,r,"/ui",302)}
-func(s *Server)list(w http.ResponseWriter,r *http.Request){
-    q:=r.URL.Query().Get("q")
-    filters:=map[string]string{}
-    if v:=r.URL.Query().Get("category");v!=""{filters["category"]=v}
-    if v:=r.URL.Query().Get("status");v!=""{filters["status"]=v}
-    if q!=""||len(filters)>0{wj(w,200,map[string]any{"resources":oe(s.db.Search(q,filters))});return}
-    wj(w,200,map[string]any{"resources":oe(s.db.List())})
+
+import (
+	"encoding/json"
+	"net/http"
+
+	"github.com/stockyard-dev/stockyard-saltlick/internal/store"
+)
+
+type Server struct {
+	db     *store.DB
+	mux    *http.ServeMux
+	limits Limits
 }
-func(s *Server)create(w http.ResponseWriter,r *http.Request){if s.limits.MaxItems>0{items:=s.db.List();if len(items)>=s.limits.MaxItems{we(w,402,"Free tier limit reached. Upgrade at https://stockyard.dev/saltlick/");return}};var e store.Resource;json.NewDecoder(r.Body).Decode(&e);if e.Title==""{we(w,400,"title required");return};s.db.Create(&e);wj(w,201,s.db.Get(e.ID))}
-func(s *Server)get(w http.ResponseWriter,r *http.Request){e:=s.db.Get(r.PathValue("id"));if e==nil{we(w,404,"not found");return};wj(w,200,e)}
-func(s *Server)update(w http.ResponseWriter,r *http.Request){
-    existing:=s.db.Get(r.PathValue("id"));if existing==nil{we(w,404,"not found");return}
-    var patch store.Resource;json.NewDecoder(r.Body).Decode(&patch);patch.ID=existing.ID;patch.CreatedAt=existing.CreatedAt
-    if patch.Title==""{patch.Title=existing.Title}
-    s.db.Update(&patch);wj(w,200,s.db.Get(patch.ID))
+
+func New(db *store.DB, limits Limits) *Server {
+	s := &Server{db: db, mux: http.NewServeMux(), limits: limits}
+
+	s.mux.HandleFunc("GET /api/flags", s.listFlags)
+	s.mux.HandleFunc("POST /api/flags", s.createFlag)
+	s.mux.HandleFunc("GET /api/flags/{id}", s.getFlag)
+	s.mux.HandleFunc("PUT /api/flags/{id}", s.updateFlag)
+	s.mux.HandleFunc("PATCH /api/flags/{id}/toggle", s.toggleFlag)
+	s.mux.HandleFunc("PATCH /api/flags/{id}/rollout", s.setRollout)
+	s.mux.HandleFunc("DELETE /api/flags/{id}", s.deleteFlag)
+	s.mux.HandleFunc("GET /api/evaluate/{key}", s.evaluate)
+	s.mux.HandleFunc("GET /api/log", s.listLog)
+	s.mux.HandleFunc("GET /api/stats", s.stats)
+	s.mux.HandleFunc("GET /api/health", s.health)
+	s.mux.HandleFunc("GET /api/tier", func(w http.ResponseWriter, r *http.Request) {
+		wj(w, 200, map[string]any{"tier": s.limits.Tier, "upgrade_url": "https://stockyard.dev/saltlick/"})
+	})
+	s.mux.HandleFunc("GET /ui", s.dashboard)
+	s.mux.HandleFunc("GET /ui/", s.dashboard)
+	s.mux.HandleFunc("GET /", s.root)
+
+	return s
 }
-func(s *Server)del(w http.ResponseWriter,r *http.Request){s.db.Delete(r.PathValue("id"));wj(w,200,map[string]string{"deleted":"ok"})}
-func(s *Server)stats(w http.ResponseWriter,r *http.Request){wj(w,200,s.db.Stats())}
-func(s *Server)health(w http.ResponseWriter,r *http.Request){wj(w,200,map[string]any{"status":"ok","service":"saltlick","resources":s.db.Count()})}
-func oe[T any](s []T)[]T{if s==nil{return[]T{}};return s}
-func init(){log.SetFlags(log.LstdFlags|log.Lshortfile)}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
+func wj(w http.ResponseWriter, c int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(c)
+	json.NewEncoder(w).Encode(v)
+}
+func we(w http.ResponseWriter, c int, m string) { wj(w, c, map[string]string{"error": m}) }
+func (s *Server) root(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	http.Redirect(w, r, "/ui", 302)
+}
+
+func (s *Server) listFlags(w http.ResponseWriter, r *http.Request) {
+	wj(w, 200, map[string]any{"flags": s.db.ListFlags()})
+}
+
+func (s *Server) createFlag(w http.ResponseWriter, r *http.Request) {
+	if s.limits.MaxItems > 0 && len(s.db.ListFlags()) >= s.limits.MaxItems {
+		we(w, 402, "Free tier limit reached. Upgrade at https://stockyard.dev/saltlick/")
+		return
+	}
+	var f store.Flag
+	json.NewDecoder(r.Body).Decode(&f)
+	if f.Key == "" {
+		we(w, 400, "key required")
+		return
+	}
+	if err := s.db.CreateFlag(&f); err != nil {
+		we(w, 400, err.Error())
+		return
+	}
+	wj(w, 201, s.db.GetByKey(f.Key))
+}
+
+func (s *Server) getFlag(w http.ResponseWriter, r *http.Request) {
+	f := s.db.GetFlag(r.PathValue("id"))
+	if f == nil {
+		we(w, 404, "not found")
+		return
+	}
+	wj(w, 200, f)
+}
+
+func (s *Server) updateFlag(w http.ResponseWriter, r *http.Request) {
+	existing := s.db.GetFlag(r.PathValue("id"))
+	if existing == nil {
+		we(w, 404, "not found")
+		return
+	}
+	var patch store.Flag
+	json.NewDecoder(r.Body).Decode(&patch)
+	patch.ID = existing.ID
+	patch.Key = existing.Key
+	patch.CreatedAt = existing.CreatedAt
+	if patch.Name == "" {
+		patch.Name = existing.Name
+	}
+	s.db.UpdateFlag(&patch)
+	wj(w, 200, s.db.GetFlag(patch.ID))
+}
+
+func (s *Server) toggleFlag(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+	if err := s.db.ToggleFlag(r.PathValue("id"), body.Enabled); err != nil {
+		we(w, 404, err.Error())
+		return
+	}
+	wj(w, 200, s.db.GetFlag(r.PathValue("id")))
+}
+
+func (s *Server) setRollout(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Rollout int `json:"rollout"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+	if body.Rollout < 0 || body.Rollout > 100 {
+		we(w, 400, "rollout must be 0-100")
+		return
+	}
+	if err := s.db.SetRollout(r.PathValue("id"), body.Rollout); err != nil {
+		we(w, 404, err.Error())
+		return
+	}
+	wj(w, 200, s.db.GetFlag(r.PathValue("id")))
+}
+
+func (s *Server) deleteFlag(w http.ResponseWriter, r *http.Request) {
+	if s.db.GetFlag(r.PathValue("id")) == nil {
+		we(w, 404, "not found")
+		return
+	}
+	s.db.DeleteFlag(r.PathValue("id"))
+	wj(w, 200, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) evaluate(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		userID = "anonymous"
+	}
+	wj(w, 200, s.db.Evaluate(key, userID))
+}
+
+func (s *Server) listLog(w http.ResponseWriter, r *http.Request) {
+	wj(w, 200, map[string]any{"log": s.db.ListLog(50)})
+}
+
+func (s *Server) stats(w http.ResponseWriter, r *http.Request) { wj(w, 200, s.db.Stats()) }
+func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	stats := s.db.Stats()
+	wj(w, 200, map[string]any{"service": "saltlick", "status": "ok", "flags": stats["total"], "enabled": stats["enabled"]})
+}
