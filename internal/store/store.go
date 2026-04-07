@@ -18,7 +18,7 @@ type Flag struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Enabled     bool   `json:"enabled"`
-	Rollout     int    `json:"rollout"` // 0-100 percentage
+	Rollout     int    `json:"rollout"`     // 0-100 percentage
 	Environment string `json:"environment"` // all, development, staging, production
 	Tags        string `json:"tags"`
 	CreatedAt   string `json:"created_at"`
@@ -55,6 +55,7 @@ func Open(d string) (*DB, error) {
 		action TEXT NOT NULL, detail TEXT DEFAULT '',
 		created_at TEXT DEFAULT(datetime('now')))`)
 
+	db.Exec(`CREATE TABLE IF NOT EXISTS extras(resource TEXT NOT NULL,record_id TEXT NOT NULL,data TEXT NOT NULL DEFAULT '{}',PRIMARY KEY(resource, record_id))`)
 	return &DB{db: db}, nil
 }
 
@@ -233,4 +234,56 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// ─── Extras: generic key-value storage for personalization custom fields ───
+
+func (d *DB) GetExtras(resource, recordID string) string {
+	var data string
+	err := d.db.QueryRow(
+		`SELECT data FROM extras WHERE resource=? AND record_id=?`,
+		resource, recordID,
+	).Scan(&data)
+	if err != nil || data == "" {
+		return "{}"
+	}
+	return data
+}
+
+func (d *DB) SetExtras(resource, recordID, data string) error {
+	if data == "" {
+		data = "{}"
+	}
+	_, err := d.db.Exec(
+		`INSERT INTO extras(resource, record_id, data) VALUES(?, ?, ?)
+		 ON CONFLICT(resource, record_id) DO UPDATE SET data=excluded.data`,
+		resource, recordID, data,
+	)
+	return err
+}
+
+func (d *DB) DeleteExtras(resource, recordID string) error {
+	_, err := d.db.Exec(
+		`DELETE FROM extras WHERE resource=? AND record_id=?`,
+		resource, recordID,
+	)
+	return err
+}
+
+func (d *DB) AllExtras(resource string) map[string]string {
+	out := make(map[string]string)
+	rows, _ := d.db.Query(
+		`SELECT record_id, data FROM extras WHERE resource=?`,
+		resource,
+	)
+	if rows == nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, data string
+		rows.Scan(&id, &data)
+		out[id] = data
+	}
+	return out
 }
